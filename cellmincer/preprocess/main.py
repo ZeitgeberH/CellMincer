@@ -9,7 +9,7 @@ import torch
 
 from scipy.signal import stft, istft
 from sklearn.linear_model import LinearRegression
-
+from scipy.ndimage import median_filter
 from abc import abstractmethod
 from typing import List, Tuple
 
@@ -46,6 +46,8 @@ class Preprocess:
         self.dejitter_config = config['dejitter']
         self.ne_config = config['noise_estimation']
         self.trim = config['trim']
+        for k in self.trim:
+            self.trim[k] = int(self.trim[k] * self.sampling_rate)
         self.detrend_config = config['detrend']
         self.bfgs = config['bfgs']
         self.device = torch.device(config['device'])
@@ -72,6 +74,7 @@ class Preprocess:
             seg_txy - mu_txy
             for seg_txy, mu_txy in zip(trimmed_segments_txy_list, mu_segments_txy_list)],
             axis=0).astype(np.float32)
+
         trend_movie_txy = np.concatenate(mu_segments_txy_list, axis=0).astype(np.float32)
 
         # precompute global features
@@ -271,7 +274,7 @@ class Preprocess:
 
         # background activity fits
         mu_segments_txy_list = []
-        
+        logging.info('fitting models...')
         for i_segment in range(self.n_segments):
             # get segment for fitting
             t_fit, fit_seg_txy = self.get_flanking_segments(fit_movie_txy, i_segment)
@@ -279,7 +282,7 @@ class Preprocess:
             t_fit_torch = torch.tensor(t_fit, device=self.device, dtype=const.DEFAULT_DTYPE)
             fit_seg_txy_torch = torch.tensor(fit_seg_txy, device=self.device, dtype=const.DEFAULT_DTYPE)
             width, height = fit_seg_txy_torch.shape[1:]
-
+            print(f'width: {width}, height: {height}')
             if self.detrend_config['trend_model'] == 'polynomial':
                 trend_model = PolynomialIntensityTrendModel(
                     t_fit_torch=t_fit_torch,
@@ -343,7 +346,7 @@ class Preprocess:
         # compute active range mask if stim params provided
         active_mask = None
         if self.stim:
-            active_mask = np.zeros(self.n_frames_per_segment * self.n_segments, dtype=np.bool)
+            active_mask = np.zeros(self.n_frames_per_segment * self.n_segments, dtype=np.bool_)
             for i_seg in range(self.stim['segment_start'], self.stim['segment_end']):
                 active_mask[i_seg * self.n_frames_per_segment + self.stim['frame_start']:
                      i_seg * self.n_frames_per_segment + self.stim['frame_end']] = 1
@@ -352,7 +355,7 @@ class Preprocess:
                      (i_seg + 1) * self.n_frames_per_segment - self.trim['trim_right']]
                 for i_seg in range(self.n_segments)])
         elif not self.infer_active_t_range:
-            active_mask = np.ones((movie_txy.shape[0],), dtype=np.bool)
+            active_mask = np.ones((movie_txy.shape[0],), dtype=np.bool_)
 
         logging.info('Extracting features...')
         feature_extractor = OptopatchGlobalFeatureExtractor(
@@ -415,7 +418,7 @@ class Preprocess:
             self.n_frames_per_segment * (i_stim + 1)
             - self.trim['trim_right']
             - self.trim['n_frames_fit_right'])
-        t_end_right = t_begin_right + self.trim['n_frames_fit_right']
+        t_end_right = t_begin_right + self.trim['n_frames_fit_right']-1
 
         i_t_list = (
             [i_t for i_t in range(t_begin_left, t_end_left)]
@@ -432,10 +435,11 @@ class Preprocess:
         window_length = self.detrend_config['smoothing_window']
         if window_length % 2 == 0:
             window_length += 1
-        pad_length = window_length // 2
-        
-        padded_movie_txy = np.pad(movie_txy, ((pad_length, pad_length), (0, 0), (0, 0)), 'edge')
-        median_txy = np.stack([np.median(padded_movie_txy[i:i + window_length], axis=0) for i in range(movie_txy.shape[0])], axis=0)
+        # pad_length = window_length // 2
+        # padded_movie_txy = np.pad(movie_txy, ((pad_length, pad_length), (0, 0), (0, 0)), 'edge')
+        logging.info('Applying median filter ...')
+        median_txy = median_filter(movie_txy, size=(window_length, 1, 1),  mode='constant', cval=0)
+        # median_txy = np.stack([np.median(padded_movie_txy[i:i + window_length], axis=0) for i in range(movie_txy.shape[0])], axis=0)
         
         return median_txy
     

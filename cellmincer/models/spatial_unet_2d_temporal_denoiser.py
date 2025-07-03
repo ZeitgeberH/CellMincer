@@ -21,7 +21,7 @@ from cellmincer.util import \
     crop_center, \
     generate_lr_scheduler, \
     generate_optimizer
-
+from tqdm import tqdm
 
 class SpatialUnet2dTemporalDenoiser(DenoisingModel):
     '''
@@ -138,7 +138,7 @@ class SpatialUnet2dTemporalDenoiser(DenoisingModel):
         # compute sliding window of U-Net frame embeddings,
         # pass each window into post-processor to get denoised middle frame
         with torch.no_grad():
-            for i_t in range(mid_frame_begin - t_mid, mid_frame_begin + t_mid):
+            for i_t in tqdm(range(mid_frame_begin - t_mid, mid_frame_begin + t_mid)):
                 padded_sliced_movie_1txy = ws_denoising.get_movie_slice(
                     include_bg=False,
                     t_begin=i_t,
@@ -156,7 +156,7 @@ class SpatialUnet2dTemporalDenoiser(DenoisingModel):
                         self.spatial_unet(padded_sliced_movie_1txy))
                 unet_features_ncxy_list.append(unet_output['features'])
 
-            for i_t in range(mid_frame_begin, mid_frame_end):
+            for i_t in tqdm(range(mid_frame_begin, mid_frame_end)):
                 padded_sliced_movie_1txy = ws_denoising.get_movie_slice(
                     include_bg=False,
                     t_begin=i_t + t_mid,
