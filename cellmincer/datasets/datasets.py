@@ -72,7 +72,12 @@ class MovieDataset(Dataset):
         self.y_padding = y_padding
         self.t_total = t_total
         self.length = length
-        
+        print("Movie dataset")
+        print(f"Movie dataset length: {self.length}")
+        print(f"Movie dataset x_window: {self.x_window}, y_window: {self.y_window}")
+        print(f"Movie dataset x_padding: {self.x_padding}, y_padding: {self.y_padding}")
+        print(f"Movie dataset t_total: {self.t_total}")
+        print(f"length: {self.length}")
         if importance is None:
             self.pivot = None
         else:
@@ -124,7 +129,8 @@ class MovieDataset(Dataset):
         ws_denoising = self.ws_denoising_list[movie_idx]
 
         n_frames, width, height = ws_denoising.shape
-
+        # print(f"Movie {movie_idx} has {n_frames} frames, {width}x{height} pixels.")
+        # print( f"Crop size: {self.x_window}x{self.y_window}, Padding: {self.x_padding}x{self.y_padding}")
         while True:
             t0 = np.random.randint(n_frames - self.t_total + 1)
             x0 = np.random.randint(width - self.x_window + 1)
@@ -259,11 +265,13 @@ def build_ws_denoising(
     opto_feature_path = os.path.join(dataset, 'features.pkl')
     with open(opto_feature_path, 'rb') as f:
         feature_container = pickle.Unpickler(f).load()
-
-    padding = max(get_window_padding_from_config(
+    window_padding = get_window_padding_from_config(
         model_config=model_config,
-        output_min_size=np.arange(1, max(movie_diff.shape[-2:]) + 1)))
-    
+        output_min_size=np.arange(1, max(movie_diff.shape[-2:]) + 1))
+    padding = max(window_padding)
+    print('Window padding:', window_padding)
+    print('--------')
+    print('Padding for crops:', padding)
     return OptopatchDenoisingWorkspace(
         movie_diff=movie_diff,
         movie_bg_path=movie_bg_path,
@@ -288,6 +296,7 @@ def build_datamodule(
 
     ws_denoising_list = []
     for i_dataset, dataset in enumerate(datasets):
+        print(f"dataset: {dataset}")
         logging.info(f'({i_dataset + 1}/{len(datasets)}) {dataset}')
         ws_denoising_list.append(build_ws_denoising(dataset, model_config, use_memmap))
 

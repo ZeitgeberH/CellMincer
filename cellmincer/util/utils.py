@@ -36,12 +36,12 @@ def generate_lr_scheduler(
     elif lr_params['type'] == 'cosine-annealing-warmup':
         sched = CosineAnnealingWarmupRestarts(
             optim,
-            first_cycle_steps=n_iters,
-            cycle_mult=1.0,
+            first_cycle_steps=lr_params['first_cycle_steps'],
+            cycle_mult=lr_params['cycle_mult'],
             max_lr=lr_params['max'],
             min_lr=lr_params['min'],
-            warmup_steps=int(n_iters * lr_params['warmup']),
-            gamma=1.0)
+            warmup_steps=lr_params['warmup_steps'],
+            gamma=lr_params['gamma'])
     else:
         logging.error('Unrecognized scheduler type')
         raise ValueError('Unrecognized scheduler type.')

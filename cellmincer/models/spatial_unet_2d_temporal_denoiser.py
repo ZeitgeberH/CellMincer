@@ -250,7 +250,10 @@ class SpatialUnet2dTemporalDenoiser(DenoisingModel):
             n_conv_layers=config['spatial_unet_n_conv_layers'],
             depth=config['spatial_unet_depth'],
             ds_rate=2)
+        print(f'Model input size: {input_size}')
+        print(f'Output min size:  {output_min_size}')
         padding = (input_size - output_min_size) // 2
+        print('calculated padding:', padding)
         return padding
 
 

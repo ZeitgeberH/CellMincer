@@ -44,11 +44,16 @@ class Preprocess:
         self.stim = manifest.get('stim')
         
         self.dejitter_config = config['dejitter']
+        for p in ['stft_nperseg', 'stft_noverlap']:
+            self.dejitter_config[p] = int(self.dejitter_config[p] * self.sampling_rate)
         self.ne_config = config['noise_estimation']
+        for p in ['plot_subsample', 'stationarity_window']: # in seconds
+            self.ne_config[p] = int(self.ne_config[p] * self.sampling_rate) # to samples
         self.trim = config['trim']
         for k in self.trim:
             self.trim[k] = int(self.trim[k] * self.sampling_rate)
         self.detrend_config = config['detrend']
+        self.detrend_config['smoothing_window'] = int(self.detrend_config['smoothing_window'] * self.sampling_rate)
         self.bfgs = config['bfgs']
         self.device = torch.device(config['device'])
         self.feature_depth = config['feature_depth']
@@ -63,20 +68,25 @@ class Preprocess:
         # dejitter movie
         if self.dejitter_config['enabled']:
             movie_txy = self.dejitter(movie_txy)
-
-        # estimate noise from dejittered movie
         noise_model_params = self.estimate_noise(movie_txy)
-
-        # fit segment trends
-        trimmed_segments_txy_list, mu_segments_txy_list = self.detrend(movie_txy, noise_model_params)
-
-        trend_sub_movie_txy = np.concatenate([
-            seg_txy - mu_txy
-            for seg_txy, mu_txy in zip(trimmed_segments_txy_list, mu_segments_txy_list)],
-            axis=0).astype(np.float32)
-
-        trend_movie_txy = np.concatenate(mu_segments_txy_list, axis=0).astype(np.float32)
-
+        if self.n_segments > 1: # segments with baselines
+            # estimate noise from dejittered movie
+            
+            # fit segment trends
+            trimmed_segments_txy_list, mu_segments_txy_list = self.detrend(movie_txy, noise_model_params)
+            trend_sub_movie_txy = np.concatenate([
+                seg_txy - mu_txy
+                for seg_txy, mu_txy in zip(trimmed_segments_txy_list, mu_segments_txy_list)],
+                axis=0).astype(np.float32)
+            trend_movie_txy = np.concatenate(mu_segments_txy_list, axis=0).astype(np.float32)
+        else:  # single segment without baselines
+            # compute  median trend
+            logging.info(f'calculating trending {self.output_dir}')
+            # from scipy.ndimage import median_filter
+            trend_movie_txy = np.median(movie_txy, axis=(1, 2), keepdims=True).astype(np.float32)
+            # subtract trend
+            trend_sub_movie_txy = (movie_txy - trend_movie_txy).astype(np.float32)
+        
         # precompute global features
         feature_extractor = self.featurize(trend_sub_movie_txy)
 
@@ -148,11 +158,12 @@ class Preprocess:
         
         if self.dejitter_config['show_diagnostic_plots']:
             fg_mask_xy = self.ws_base.corr_otsu_fg_pixel_mask_xy
-            bg_mask_xy = ~fg_mask_xy
+            bg_mask_xy = self.ws_base.corr_otsu_bg_pixel_mask_xy
 
             # raw frame-to-frame log variations
             fg_raw_mean_t = np.mean(np.log(movie_txy.reshape(self.ws_base.n_frames, -1)[
                 self.dejitter_config['ignore_first_n_frames']:, fg_mask_xy.flatten()] - baseline + const.EPS), axis=-1)
+
             bg_raw_mean_t = np.mean(np.log(movie_txy.reshape(self.ws_base.n_frames, -1)[
                 self.dejitter_config['ignore_first_n_frames']:, bg_mask_xy.flatten()] - baseline + const.EPS), axis=-1)
 
@@ -185,7 +196,7 @@ class Preprocess:
         return dejittered_movie_txy
 
 
-    def estimate_noise(self, movie_txy: np.ndarray) -> dict:
+    def estimate_noise(self, movie_txy: np.ndarray, background_only=True) -> dict:
 
         if self.ne_config['plot_example']:
             fig = plt.figure()
@@ -209,10 +220,23 @@ class Preprocess:
             i_t = np.random.randint(0, high=len(t) - self.ne_config['stationarity_window'])
 
             # calculate empirical mean and variance, assuming signal stationarity
+            background_mask = self.ws_base.corr_otsu_bg_pixel_mask_xy
             mu_empirical = np.mean(trimmed_seg_txy[
-                i_t:(i_t + self.ne_config['stationarity_window']), ...], axis=0).flatten()
+                i_t:(i_t + self.ne_config['stationarity_window']), ...], axis=0)
+            if background_only:
+                # use background pixels only
+                mu_empirical = mu_empirical[background_mask].flatten()
+            else:
+                # use all pixels
+                mu_empirical = mu_empirical.flatten()
             var_empirical = np.var(trimmed_seg_txy[
-                i_t:(i_t + self.ne_config['stationarity_window']), ...], axis=0, ddof=1).flatten()
+                i_t:(i_t + self.ne_config['stationarity_window']), ...], axis=0, ddof=1)
+            if background_only:
+                # use background pixels only
+                var_empirical = var_empirical[background_mask].flatten()
+            else:
+                # use all pixels
+                var_empirical = var_empirical.flatten()
             min_var_empirical = min(min_var_empirical, var_empirical.min())
 
             # perform linear regression
@@ -316,8 +340,7 @@ class Preprocess:
 
             for i_iter in range(self.detrend_config['max_iters_per_segment']):
                 loss = optim.step(closure).item()
-
-            logging.info(f'detrended segment {i_segment + 1}/{self.n_segments} | loss = {loss / (width * height * len(t_fit)):.6f}')
+                logging.info(f'detrended segment {i_segment + 1}/{self.n_segments} | loss = {loss / (width * height * len(t_fit)):.3f} | iter {i_iter}')
 
             t_trimmed, trimmed_seg_txy = self.get_trimmed_segment(movie_txy, i_segment)
             t_trimmed_torch = torch.tensor(t_trimmed, device=self.device, dtype=const.DEFAULT_DTYPE)
@@ -385,7 +408,7 @@ class Preprocess:
         trend_series_t = np.zeros_like(series_t)
 
         # calculate temporal moving average
-        for i_t in range(series_t.size):
+        for i_t in tqdm(range(series_t.size)):
             trend_series_t[i_t] = detrending_func(padded_series_t[i_t:(i_t + 2 * detrending_order + 1)])
 
         return trend_series_t
@@ -420,10 +443,11 @@ class Preprocess:
             - self.trim['n_frames_fit_right'])
         t_end_right = t_begin_right + self.trim['n_frames_fit_right']-1
 
-        i_t_list = (
-            [i_t for i_t in range(t_begin_left, t_end_left)]
-            + [i_t for i_t in range(t_begin_right, t_end_right)])
-
+        
+        # i_t_list = (
+        #     [i_t for i_t in range(t_begin_left, t_end_left)]
+        #     + [i_t for i_t in range(t_begin_right, t_end_right)])
+        i_t_list = list(range(t_begin_left, t_end_left)) + list(range(t_begin_right, t_end_right))
         t = np.asarray([i_t - t_begin_left for i_t in i_t_list]) / self.sampling_rate
 
         return t, movie_txy[i_t_list, ...]
@@ -447,22 +471,28 @@ class Preprocess:
     def ws_base_from_input_manifest(
             input_file: str,
             manifest: dict) -> OptopatchBaseWorkspace:
+        
         if input_file.endswith('.npy'):
-            ws_base = OptopatchBaseWorkspace.from_npy(input_file, order=manifest['order'])
+            ws_base = OptopatchBaseWorkspace.from_npy(input_file, order=manifest['order'],
+            correlation_boundary_pixels=manifest['border'])
         elif input_file.endswith('.npz'):
             if 'key' in manifest:
-                ws_base = OptopatchBaseWorkspace.from_npz(input_file, order=manifest['order'], key=manifest['key'])
+                ws_base = OptopatchBaseWorkspace.from_npz(input_file, order=manifest['order'], key=manifest['key'],
+                correlation_boundary_pixels=manifest['border'])
             else:
-                ws_base = OptopatchBaseWorkspace.from_npz(input_file, order=manifest['order'])
+                ws_base = OptopatchBaseWorkspace.from_npz(input_file, order=manifest['order'],
+                correlation_boundary_pixels=manifest['border'])
         elif input_file.endswith('.bin'):
             ws_base = OptopatchBaseWorkspace.from_bin_uint16(
                 input_file,
                 n_frames=manifest.get('n_frames', manifest['n_frames_per_segment'] * manifest['n_segments']),
                 width=manifest['width'],
                 height=manifest['height'],
-                order=manifest['order'])
+                order=manifest['order'],
+                correlation_boundary_pixels=manifest['border'])
         elif input_file.endswith('.tif'):
-            ws_base = OptopatchBaseWorkspace.from_tiff(input_file, order=manifest['order'])
+            ws_base = OptopatchBaseWorkspace.from_tiff(input_file, order=manifest['order'],
+            correlation_boundary_pixels=manifest['border'])
         else:
             logging.error('Unrecognized movie file format: options are .npy, .npz, .bin, .tif')
             raise ValueError

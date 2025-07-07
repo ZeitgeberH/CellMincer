@@ -24,10 +24,12 @@ class OptopatchBaseWorkspace:
     def __init__(self,
                  movie_txy: np.ndarray,
                  dtype = np.float32,
-                 neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST):
+                 neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST,
+                 correlation_boundary_pixels: Optional[int] = 0):
         self.movie_txy = movie_txy.astype(dtype)
         self.dtype = dtype
         self.neighbor_dx_dy_list = neighbor_dx_dy_list
+        self.correlation_boundary_pixels = correlation_boundary_pixels
 
     @staticmethod
     def from_bin_uint16(
@@ -37,7 +39,8 @@ class OptopatchBaseWorkspace:
             height: int,
             order: str = 'tyx',
             dtype = np.float32,
-            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST):
+            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST,
+            correlation_boundary_pixels: Optional[int] = 0):
         # load the movie
         logging.debug(f"Loading movie from {movie_bin_path} ...")
         shape_dict = {'x': width, 'y': height, 't': n_frames}
@@ -47,14 +50,16 @@ class OptopatchBaseWorkspace:
         return OptopatchBaseWorkspace(
             movie_txy=movie_txy,
             dtype=dtype,
-            neighbor_dx_dy_list=neighbor_dx_dy_list) 
+            neighbor_dx_dy_list=neighbor_dx_dy_list,
+            correlation_boundary_pixels=correlation_boundary_pixels) 
 
     @staticmethod
     def from_npy(
             movie_npy_path: str,
             order: str = 'tyx',
             dtype = np.float32,
-            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST):
+            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST,
+            correlation_boundary_pixels: Optional[int] = 0):
         # load the movie
         logging.debug(f"Loading movie from {movie_npy_path} ...")
         movie_nnn = np.load(movie_npy_path).astype(dtype)
@@ -62,7 +67,8 @@ class OptopatchBaseWorkspace:
         return OptopatchBaseWorkspace(
             movie_txy=movie_txy,
             dtype=dtype,
-            neighbor_dx_dy_list=neighbor_dx_dy_list)
+            neighbor_dx_dy_list=neighbor_dx_dy_list,
+            correlation_boundary_pixels=correlation_boundary_pixels)
     
     @staticmethod
     def from_npz(
@@ -70,7 +76,8 @@ class OptopatchBaseWorkspace:
             order: str = 'tyx',
             key = 'arr_0',
             dtype = np.float32,
-            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST):
+            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST,
+            correlation_boundary_pixels: Optional[int] = 0):
         # load the movie
         logging.debug(f"Loading movie from {movie_npz_path} ...")
         
@@ -81,14 +88,16 @@ class OptopatchBaseWorkspace:
         return OptopatchBaseWorkspace(
             movie_txy=movie_txy,
             dtype=dtype,
-            neighbor_dx_dy_list=neighbor_dx_dy_list)
+            neighbor_dx_dy_list=neighbor_dx_dy_list,
+            correlation_boundary_pixels=correlation_boundary_pixels)
     
     @staticmethod
     def from_tiff(
             movie_tiff_path: str,
             order: str = 'tyx',
             dtype = np.float32,
-            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST):
+            neighbor_dx_dy_list: List[Tuple[int, int]] = DEFAULT_NEIGHBOR_DX_DY_LIST,
+            correlation_boundary_pixels: Optional[int] = 0):
         # load the movie
         logging.debug(f"Loading movie from {movie_tiff_path} ...")
         movie_nnn = tifffile.imread(movie_tiff_path).astype(dtype)
@@ -96,7 +105,8 @@ class OptopatchBaseWorkspace:
         return OptopatchBaseWorkspace(
             movie_txy=movie_txy,
             dtype=dtype,
-            neighbor_dx_dy_list=neighbor_dx_dy_list)
+            neighbor_dx_dy_list=neighbor_dx_dy_list,
+            correlation_boundary_pixels=correlation_boundary_pixels)
 
     def get_t_truncated_movie(self, t_mask: np.ndarray) -> 'OptopatchBaseWorkspace':
         return OptopatchBaseWorkspace(
@@ -162,16 +172,39 @@ class OptopatchBaseWorkspace:
     
     @cached_property
     def movie_t_corr_xy(self) -> np.ndarray:
-        return np.maximum.reduce(self.movie_t_corr_xy_list).astype(self.dtype)
+        bp = self.correlation_boundary_pixels
+        c = np.maximum.reduce(self.movie_t_corr_xy_list).astype(self.dtype)
+        # remove spurious correlations at the boundary
+        if bp > 0: # zero out the boundary pixels
+            c[:bp, :]  = 0
+            c[-bp:, :] = 0
+            c[:, :bp]  = 0
+            c[:, -bp:] = 0
+        return c
     
     @cached_property
     def corr_otsu_threshold(self) -> float:
-        return threshold_otsu(self.movie_t_corr_xy)
+        bp = self.correlation_boundary_pixels
+        if bp > 0: # zero out the boundary pixels
+            return threshold_otsu(self.movie_t_corr_xy[bp:-bp, bp:-bp])
+        else:
+            return threshold_otsu(self.movie_t_corr_xy)
 
     @cached_property
     def corr_otsu_fg_pixel_mask_xy(self) -> np.ndarray:
         return self.movie_t_corr_xy >= self.corr_otsu_threshold
     
+    @cached_property
+    def corr_otsu_bg_pixel_mask_xy(self) -> np.ndarray:
+        bp = self.correlation_boundary_pixels
+        bmask = ~self.corr_otsu_fg_pixel_mask_xy
+        if bp>0:
+            bmask[:bp, :]  = False
+            bmask[-bp:, :] = False
+            bmask[:, :bp]  = False
+            bmask[:, -bp:] = False    
+        return bmask
+
     @cached_property
     def corr_otsu_fg_weight(self) -> float:
         return self.corr_otsu_fg_pixel_mask_xy.sum().item() / self.n_pixels

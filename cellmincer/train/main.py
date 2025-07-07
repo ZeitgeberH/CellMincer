@@ -14,7 +14,8 @@ from cellmincer.models import \
     init_model, \
     get_window_padding_from_config, \
     load_model_from_checkpoint
-    
+import torch
+torch.set_float32_matmul_precision('medium')    
 class Train:
     def __init__(
             self,
@@ -89,14 +90,14 @@ class Train:
             best_train = np.argmax(output_min_size / (output_min_size + 2 * train_padding))
             train_config['x_window'] = train_config['y_window'] = output_min_size[best_train]
             train_config['x_padding'] = train_config['y_padding'] = train_padding[best_train]
-            
+        print(f'\nUsing train config:\n {train_config}\n')
         self.movie_dm = build_datamodule(
             datasets=datasets,
             model_config=config['model'],
             train_config=train_config,
             gpus=gpus,
             use_memmap=use_memmap)
-        
+        logging.info(f'Number of batches in dataloader: {len(self.movie_dm.train_dataloader())}')
         if self.model is None:
             logging.info('Initializing new model.')
             model_config = config['model']
@@ -107,22 +108,32 @@ class Train:
         
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
-
+        if train_config['strategy'] == 'ddp':
+            assert gpus >= 1, 'Training requires at least one CUDA-supported GPU.'
+            train_strategy = DDPStrategy(find_unused_parameters=True)
+        else:
+            train_strategy = 'auto'
+        logging.info(f"Using {train_config['strategy']} for training.")
         self.trainer = Trainer(
-            strategy=DDPStrategy(find_unused_parameters=True),
+            strategy=train_strategy,
             devices=gpus,
             max_epochs=train_config['n_iters'],
             default_root_dir=self.output_dir,
             callbacks=[ModelCheckpoint(dirpath=self.output_dir, save_last=True)],
-            sync_batchnorm=True)
+            sync_batchnorm=True,
+            log_every_n_steps = 10,
+            gradient_clip_val = train_config.get('gradient_clip_val', 10.0)
+            )
 
     def run(self):
         logging.info('Training model...')
         
         self.trainer.fit(
             model=self.model,
-            train_dataloaders=self.movie_dm,
-            ckpt_path=self.ckpt_path)
+            train_dataloaders=self.movie_dm.train_dataloader(),
+            ckpt_path=self.ckpt_path,
+   
+)
 
         # save trained model
         logging.info('Training complete.')
