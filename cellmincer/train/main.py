@@ -15,7 +15,16 @@ from cellmincer.models import \
     get_window_padding_from_config, \
     load_model_from_checkpoint
 import torch
-torch.set_float32_matmul_precision('medium')    
+
+_TRAINING_PRECSION= 'highest'  # Default precision for training. altertive value are 'high' (default),  'highest'
+if _TRAINING_PRECSION == 'medium':
+    torch.set_float32_matmul_precision('medium')
+elif _TRAINING_PRECSION == 'high':
+    torch.set_float32_matmul_precision('high')
+elif _TRAINING_PRECSION == 'highest':
+    torch.set_float32_matmul_precision('highest')
+    torch.backends.cuda.matmul.allow_tf32 = False
+
 class Train:
     def __init__(
             self,
