@@ -12,6 +12,7 @@ from sklearn.linear_model import LinearRegression
 from scipy.ndimage import median_filter
 from abc import abstractmethod
 from typing import List, Tuple
+from tqdm import tqdm
 
 from cellmincer.util import OptopatchBaseWorkspace, OptopatchGlobalFeatureExtractor, const
 
@@ -41,17 +42,17 @@ class Preprocess:
         self.n_segments = manifest['n_segments']
         self.sampling_rate = manifest['sampling_rate']
         self.infer_active_t_range = manifest.get('infer_active_t_range', False)
-        self.stim = manifest.get('stim')
+        self.stim = manifest.get('stim', False)
         
         self.dejitter_config = config['dejitter']
         for p in ['stft_nperseg', 'stft_noverlap']:
-            self.dejitter_config[p] = int(self.dejitter_config[p] * self.sampling_rate)
+            self.dejitter_config[p] = max(int(self.dejitter_config[p] * self.sampling_rate), 128)
         self.ne_config = config['noise_estimation']
         for p in ['plot_subsample', 'stationarity_window']: # in seconds
-            self.ne_config[p] = int(self.ne_config[p] * self.sampling_rate) # to samples
+            self.ne_config[p] = max(int(self.ne_config[p] * self.sampling_rate), 128) # to samples
         self.trim = config['trim']
         for k in self.trim:
-            self.trim[k] = int(self.trim[k] * self.sampling_rate)
+            self.trim[k] = max(int(self.trim[k] * self.sampling_rate), 2048)
         self.detrend_config = config['detrend']
         self.detrend_config['smoothing_window'] = int(self.detrend_config['smoothing_window'] * self.sampling_rate)
         self.bfgs = config['bfgs']
@@ -210,7 +211,7 @@ class Preprocess:
 
         min_var_empirical = np.inf
         
-        for i_bootstrap in range(self.ne_config['n_bootstrap']):
+        for i_bootstrap in tqdm(range(self.ne_config['n_bootstrap'])):
 
             # choose a random segment
             i_segment = np.random.randint(self.n_segments)
@@ -238,7 +239,12 @@ class Preprocess:
                 # use all pixels
                 var_empirical = var_empirical.flatten()
             min_var_empirical = min(min_var_empirical, var_empirical.min())
-
+            n_nan_mu = np.sum(np.isnan(mu_empirical))
+            n_nan_var = np.sum(np.isnan(var_empirical))
+            if n_nan_mu > 0 or n_nan_var > 0:
+                logging.warning(
+                    f'NaN values found in empirical means ({n_nan_mu}) or variances ({n_nan_var}), skipping this bootstrap iteration.')
+                continue
             # perform linear regression
             reg = LinearRegression().fit(mu_empirical[:, None], var_empirical[:, None])
             slope_list.append(reg.coef_.item())
@@ -378,9 +384,14 @@ class Preprocess:
                      (i_seg + 1) * self.n_frames_per_segment - self.trim['trim_right']]
                 for i_seg in range(self.n_segments)])
         elif not self.infer_active_t_range:
+            nMax = movie_txy.shape[0]-self.trim['trim_left']- self.trim['trim_right']
+            N = int(nMax *0.5) # use 50% of the frames as active range
+            N = min(N, 10_000)
+            logging.info(f'Using first {N} frames as active range, starting at {self.trim["trim_left"]}...')
             active_mask = np.ones((movie_txy.shape[0],), dtype=np.bool_)
+            active_mask[self.trim['trim_left']: self.trim['trim_left']+N] = 0
 
-        logging.info('Extracting features...')
+        logging.info(f'Extracting features...')
         feature_extractor = OptopatchGlobalFeatureExtractor(
             movie_txy=movie_txy,
             active_mask=active_mask,

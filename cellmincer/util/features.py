@@ -263,6 +263,12 @@ class OptopatchGlobalFeatureExtractor:
         self.features = OptopatchGlobalFeatureContainer()
 
         # populate features
+        # log some info about the movie
+        logging.info(
+            f'Input movie shape for features: {self.movie_txy.shape}, '
+            f'number of active frame: {self.active_mask_t.sum()}, '
+            f'percentage: {self.active_mask_t.sum() * 100 / self.active_mask_t.size:.1f}%'
+        )
         self._populate_features()
 
     @staticmethod
