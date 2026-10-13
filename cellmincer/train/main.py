@@ -16,7 +16,7 @@ from cellmincer.models import \
     load_model_from_checkpoint
 import torch
 
-_TRAINING_PRECSION= 'highest'  # Default precision for training. altertive value are 'high' (default),  'highest'
+_TRAINING_PRECSION= 'medium'  # Default precision for training. altertive value are 'high' (default),  'highest'
 if _TRAINING_PRECSION == 'medium':
     torch.set_float32_matmul_precision('medium')
 elif _TRAINING_PRECSION == 'high':

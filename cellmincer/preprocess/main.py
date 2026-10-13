@@ -385,8 +385,8 @@ class Preprocess:
                 for i_seg in range(self.n_segments)])
         elif not self.infer_active_t_range:
             nMax = movie_txy.shape[0]-self.trim['trim_left']- self.trim['trim_right']
-            N = int(nMax *0.5) # use 50% of the frames as active range
-            N = min(N, 10_000)
+            N = int(nMax *0.8) # use 80% of the frames as active range
+            N = min(N, 16_000)
             logging.info(f'Using first {N} frames as active range, starting at {self.trim["trim_left"]}...')
             active_mask = np.zeros((movie_txy.shape[0],), dtype=np.bool_)
             active_mask[self.trim['trim_left']: self.trim['trim_left']+N] = 1
